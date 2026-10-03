@@ -1,0 +1,1 @@
+st.components.v1.html(open("mf-analyzer.html").read(), height=1400, scrolling=True)
