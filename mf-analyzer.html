@@ -43,7 +43,7 @@ a.nm{cursor:pointer;color:var(--ac);text-decoration:underline}
 <main>
 <section class="card">
  <h2>Add funds</h2>
- <div class="row"><input id="q" placeholder="e.g. flexi cap, small cap, aggressive hybrid" size="34">
+ <div class="row"><input id="q" placeholder="e.g. small cap, nippon, or scheme codes: 118778,125497" size="34">
  <button class="p" id="load">Load Direct Growth funds</button><span class="meta" id="prog"></span></div>
  <div class="info">Searches MFapi.in and loads up to 30 matching Direct Growth plans. Load a whole category (20+ funds) so peer comparisons mean something.</div>
  <div id="errs"></div>
@@ -95,11 +95,22 @@ async function pool(codes){
 }
 async function load(){
  const q=$('#q').value.trim();if(!q)return showErr('Type a category or fund name first.');
- S.errs=[];$('#errs').innerHTML='';$('#load').disabled=true;
+ S.errs=[];$('#errs').innerHTML='';$('#prog').textContent='';$('#load').disabled=true;
  try{
-  const r=await getJSON(API+'/search?q='+encodeURIComponent(q));
-  const codes=r.filter(x=>/direct/i.test(x.schemeName)&&/growth/i.test(x.schemeName)&&!/idcw|dividend|bonus/i.test(x.schemeName)).slice(0,30).map(x=>x.schemeCode);
-  if(!codes.length)showErr('MFapi.in returned no Direct Growth plans for "'+q+'". Try a shorter or different search.');else await pool(codes);
+  let codes=[],seen=0;
+  if(/^[\d,\s]+$/.test(q))codes=q.split(/[\s,]+/).filter(Boolean);
+  else{
+   const ok=n=>/direct/i.test(n)&&/growth/i.test(n)&&!/idcw|dividend|bonus|payout|reinvest/i.test(n),got={};
+   for(const sq of [q+' direct growth',q+' direct',q]){
+    $('#prog').textContent='Searching "'+sq+'"...';
+    let r;try{r=await getJSON(API+'/search?q='+encodeURIComponent(sq))}catch(e){showErr('Search for "'+sq+'" failed: '+e.message);continue}
+    seen+=Array.isArray(r)?r.length:0;
+    (Array.isArray(r)?r:[]).forEach(x=>{if(ok(x.schemeName))got[x.schemeCode]=1});
+    if(Object.keys(got).length>=30)break;
+   }
+   codes=Object.keys(got).slice(0,30);
+  }
+  if(!codes.length)showErr('No Direct Growth plans found for "'+q+'" ('+seen+' results scanned across 3 searches). Try a fund-house name (e.g. "nippon small cap") or paste scheme codes separated by commas.');else await pool(codes);
  }catch(e){showErr('Search failed: '+e.message+'. Check your connection and retry.')}
  $('#load').disabled=false;go();
 }
