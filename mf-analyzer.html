@@ -43,13 +43,18 @@ a.nm{cursor:pointer;color:var(--ac);text-decoration:underline}
 <main>
 <section class="card">
  <h2>Add funds</h2>
- <div class="row"><input id="q" placeholder="e.g. small cap, nippon, or scheme codes: 118778,125497" size="34">
- <button class="p" id="load">Load Direct Growth funds</button><span class="meta" id="prog"></span></div>
- <div class="info">Searches MFapi.in and loads up to 30 matching Direct Growth plans. Load a whole category (20+ funds) so peer comparisons mean something.</div>
+ <button class="p" id="loadall">Load all Equity + Hybrid funds</button><button id="stop">Stop</button><span class="meta" id="prog"></span></div>
+ <progress id="bar" max="1" value="0" hidden style="width:100%;margin-top:6px"></progress>
+ <div class="row" style="margin-top:8px"><input id="q" placeholder="Or add specific funds: a search term or scheme codes (118778,125497)" size="46"><button id="load">Add</button></div>
+ <div class="info">First load downloads every Direct Growth Equity and Hybrid scheme from MFapi.in (roughly 700 to 1,000 funds; a few minutes, keep the tab open). It is cached in your browser, and an interrupted load resumes where it stopped. Refresh later re-downloads the cached funds.</div>
  <div id="errs"></div>
 </section>
 <section class="card"><div class="row">
+ <label>Type <select id="ty"><option value="all">All</option><option>Equity</option><option>Hybrid</option></select></label>
  <label>Category <select id="cat"></select></label>
+ <label>AMC <select id="am"></select></label>
+ <label>Tier <select id="ti"><option value="all">All</option><option value="0">In Form</option><option value="1">On Track</option><option value="2">Off Track</option><option value="3">Out of Form</option></select></label>
+ <label><input type="checkbox" id="ro"> Rated only</label>
  <input id="flt" placeholder="Filter by name">
  <label><input type="checkbox" id="emo"> Emerging only (&lt;3 years)</label>
 </div><div class="info" id="note"></div></section>
@@ -69,7 +74,7 @@ a.nm{cursor:pointer;color:var(--ac);text-decoration:underline}
 const RF=.065,API='https://api.mfapi.in/mf',$=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ls={get(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}};
-const S={f:ls.get('mfa.funds')||{},fetched:ls.get('mfa.at'),w:ls.get('mfa.watch')||[],cmp:[],sort:['score',-1],errs:[]};
+const S={f:ls.get('mfa.funds')||{},skip:ls.get('mfa.skip')||{},fetched:ls.get('mfa.at'),w:ls.get('mfa.watch')||[],cmp:[],sort:['score',-1],errs:[]};
 const TIERS=['In Form','On Track','Off Track','Out of Form'];
 const pc=v=>v==null?'–':(v*100).toFixed(1)+'%',n2=v=>v==null?'–':v.toFixed(2);
 const COLS=[['r1','1Y',pc],['r3','3Y',pc],['r5','5Y',pc],['vol','Vol',pc],['sharpe','Sharpe',n2],['sortino','Sortino',n2],['mdd','Max DD',pc],['beta','Beta',n2],['alpha','Alpha',pc],['dc','Down cap',v=>v==null?'–':v.toFixed(0)+'%'],['win','Win rate',pc]];
@@ -81,17 +86,34 @@ async function fetchFund(code){
  const j=await getJSON(API+'/'+code);
  if(!j||!j.meta||!Array.isArray(j.data)||!j.data.length)throw new Error('empty or malformed response');
  const cat=j.meta.scheme_category||'';
- if(!/^(Equity|Hybrid)/i.test(cat))throw new Error('category "'+cat+'" is not Equity or Hybrid, skipped');
+ if(!/^(Equity|Hybrid)/i.test(cat)){const e=new Error('category "'+cat+'" is not Equity or Hybrid');e.skip=1;throw e}
  const m={};for(let i=j.data.length-1;i>=0;i--){const d=iso(j.data[i].date),v=parseFloat(j.data[i].nav);if(v>0)m[d.slice(0,7)]=v}
- const s=Object.entries(m);
- return{code,name:j.meta.scheme_name,cat,s,first:iso(j.data[j.data.length-1].date),last:iso(j.data[0].date)};
+ const s=Object.entries(m).slice(-84);
+ return{code,name:j.meta.scheme_name,cat,amc:j.meta.fund_house||'Unknown',s,first:iso(j.data[j.data.length-1].date),last:iso(j.data[0].date)};
 }
-async function pool(codes){
- let done=0,i=0;const bad=[];
- const run=async()=>{while(i<codes.length){const c=codes[i++];try{S.f[c]=await fetchFund(c)}catch(e){bad.push('Scheme '+c+': '+e.message+(/HTTP|fetch|Failed/i.test(e.message)?' (network or API problem; press Refresh to retry)':''))}$('#prog').textContent='Fetched '+(++done)+' of '+codes.length}};
- await Promise.all([run(),run(),run(),run(),run()]);
- bad.forEach(showErr);S.fetched=new Date().toISOString();
- if(!ls.set('mfa.funds',S.f)||!ls.set('mfa.at',S.fetched))showErr('Browser storage is full or blocked: data will not persist after reload.');
+let STOP=false;
+async function pool(codes,conc=8){
+ let done=0,i=0,skip=0;const bad=[];STOP=false;
+ const run=async()=>{while(i<codes.length&&!STOP){const c=codes[i++];
+  try{S.f[c]=await fetchFund(c)}catch(e){if(e.skip){skip++;S.skip[c]=1}else bad.push('Scheme '+c+': '+e.message)}
+  done++;if(done%10===0||done===codes.length){$('#prog').textContent='Fetched '+done+' of '+codes.length+(skip?' ('+skip+' non-equity/hybrid skipped)':'');$('#bar').value=done/codes.length;$('#bar').hidden=false}
+  if(done%100===0){ls.set('mfa.funds',S.f);ls.set('mfa.skip',S.skip)}}};
+ await Promise.all(Array.from({length:conc},run));
+ bad.slice(0,5).forEach(showErr);if(bad.length>5)showErr('...and '+(bad.length-5)+' more fetch failures (network or API problem). Press Refresh data to retry them.');
+ $('#bar').hidden=true;S.fetched=new Date().toISOString();
+ if(!ls.set('mfa.funds',S.f)||!ls.set('mfa.at',S.fetched)||!ls.set('mfa.skip',S.skip))showErr('Browser storage is full or blocked: data will not persist after reload.');
+}
+const SKIPN=/liquid|overnight|debt|gilt|bond|income|duration|money market|credit|banking & psu|psu debt|fixed|floater|short term|medium term|corporate|maturity|fmp|etf|fof|fund of fund|index|gold|silver|capital protection|interval|treasury|g-sec|sdl/i;
+async function loadAll(){
+ S.errs=[];$('#errs').innerHTML='';$('#loadall').disabled=true;$('#prog').textContent='Downloading scheme list...';
+ try{
+  const all=await getJSON(API);
+  if(!Array.isArray(all)||!all.length)throw new Error('empty scheme list');
+  const codes=all.filter(x=>/direct/i.test(x.schemeName)&&/growth/i.test(x.schemeName)&&!/idcw|dividend|bonus|payout|reinvest|segregated/i.test(x.schemeName)&&!SKIPN.test(x.schemeName)&&!S.f[x.schemeCode]&&!S.skip[x.schemeCode]).map(x=>x.schemeCode);
+  if(!codes.length)$('#prog').textContent='Everything is already loaded. Use Refresh data for the latest NAVs.';
+  else{$('#prog').textContent='Downloading '+codes.length+' funds...';await pool(codes)}
+ }catch(e){showErr('Could not load the scheme list: '+e.message+'. Check your connection and retry.')}
+ $('#loadall').disabled=false;go();
 }
 async function load(){
  const q=$('#q').value.trim();if(!q)return showErr('Type a category or fund name first.');
@@ -154,22 +176,26 @@ let CH={};
 function mk(id,cfg){if(typeof Chart==='undefined')return;CH[id]&&CH[id].destroy();const cs=getComputedStyle(document.documentElement);Chart.defaults.color=cs.getPropertyValue('--mut');Chart.defaults.borderColor=cs.getPropertyValue('--line');CH[id]=new Chart($('#'+id),cfg)}
 const parent=c=>c.split(/ Scheme/)[0],sub=c=>c.includes(' - ')?c.split(' - ').slice(1).join(' - '):c;
 function rows(){
- const cat=$('#cat').value,t=$('#flt').value.toLowerCase(),em=$('#emo').checked;
- return Object.values(S.f).filter(f=>(cat==='all'||f.cat===cat)&&f.name.toLowerCase().includes(t)&&(!em||f.emerging));
+ const cat=$('#cat').value,t=$('#flt').value.toLowerCase(),em=$('#emo').checked,ty=$('#ty').value,am=$('#am').value,ti=$('#ti').value,ro=$('#ro').checked;
+ return Object.values(S.f).filter(f=>(cat==='all'||f.cat===cat)&&(ty==='all'||parent(f.cat)===ty)&&(am==='all'||f.amc===am)&&(ti==='all'||(f.elig&&f.tier===+ti))&&(!ro||f.elig)&&f.name.toLowerCase().includes(t)&&(!em||f.emerging));
 }
+const fs0=()=>Object.values(S.f);
 function go(){
  compute();
  const cats=[...new Set(Object.values(S.f).map(f=>f.cat))].sort(),cur=$('#cat').value;
  const groups={};cats.forEach(c=>(groups[parent(c)]??=[]).push(c));
  $('#cat').innerHTML='<option value="all">All categories</option>'+Object.entries(groups).map(([g,l])=>'<optgroup label="'+esc(g)+'">'+l.map(c=>'<option value="'+esc(c)+'">'+esc(sub(c))+'</option>').join('')+'</optgroup>').join('');
- $('#cat').value=cats.includes(cur)||cur==='all'?cur:(cats[0]||'all');
+ const cnt={};fs0().forEach(f=>cnt[f.cat]=(cnt[f.cat]||0)+1);
+ $('#cat').value=cats.includes(cur)||cur==='all'?cur:(cats.sort((a,b)=>cnt[b]-cnt[a])[0]||'all');
+ const ca=$('#am').value,amcs=[...new Set(fs0().map(f=>f.amc))].sort();
+ $('#am').innerHTML='<option value="all">All</option>'+amcs.map(a=>'<option>'+esc(a)+'</option>').join('');$('#am').value=amcs.includes(ca)?ca:'all';
  const fs=Object.values(S.f),dates=fs.map(f=>f.last).sort();
  $('#hd').textContent=fs.length?'Latest NAV date: '+dates[dates.length-1]+' | Fetched: '+new Date(S.fetched).toLocaleString()+' | '+fs.length+' funds':'No data loaded. Search for a category to begin.';
  draw();
 }
 function draw(){
  const R=rows(),rated=R.filter(f=>f.elig).sort((a,b)=>b.score-a.score);
- $('#note').textContent=R.length?R.length+' funds shown, '+rated.length+' rated. Alpha and beta use the category average of loaded funds as the benchmark. Average AUM is not available from MFapi.in, so the ₹5 crore AUM rule is not applied.':'No funds to show.';
+ $('#note').textContent=R.length?R.length+' funds shown, '+rated.length+' rated.'+($('#cat').value==='all'?' Scores are percentiles within each category, so pick a category for like-for-like leaderboards.':'')+' Alpha and beta use the category average of loaded funds as the benchmark. Average AUM is not available from MFapi.in, so the ₹5 crore AUM rule is not applied.':'No funds to show.';
  const li=f=>'<li><a class="nm" data-d="'+f.code+'">'+esc(f.name)+'</a><b>'+f.score.toFixed(0)+'</b></li>';
  $('#top').innerHTML=rated.slice(0,5).map(li).join('')||'<li class="meta">No rated funds</li>';
  $('#bot').innerHTML=rated.slice(-5).reverse().map(li).join('')||'<li class="meta">No rated funds</li>';
@@ -213,9 +239,9 @@ document.addEventListener('change',e=>{
  const t=e.target;
  if(t.dataset.c){if(t.checked){if(S.cmp.length>=4){t.checked=false;showErr('Compare is limited to 4 funds. Untick one first.');return}S.cmp.push(t.dataset.c)}else S.cmp=S.cmp.filter(x=>x!==t.dataset.c);charts(rows(),[])}
 });
-['cat','emo','dm'].forEach(i=>$('#'+i).addEventListener('change',draw));$('#flt').addEventListener('input',draw);
+['cat','emo','dm','ty','am','ti','ro'].forEach(i=>$('#'+i).addEventListener('change',draw));$('#flt').addEventListener('input',draw);
 $('#dm').innerHTML='<option value="score">Score</option>'+COLS.map(c=>'<option value="'+c[0]+'">'+c[1]+'</option>').join('');
-$('#load').onclick=load;$('#refresh').onclick=refresh;$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
+$('#load').onclick=load;$('#loadall').onclick=loadAll;$('#stop').onclick=()=>{STOP=true;$('#prog').textContent='Stopping after current requests. Progress is saved; press Load all again to resume.'};$('#refresh').onclick=refresh;$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
 $('#theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.dataset.theme=dark?'light':'dark';draw()};
 if(typeof Chart==='undefined')showErr('Chart library failed to load from cdnjs.cloudflare.com. Check your connection and reload; tables still work.');
 go();
